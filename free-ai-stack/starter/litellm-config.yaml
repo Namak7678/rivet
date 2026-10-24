@@ -1,0 +1,84 @@
+# ============================================================
+#  LiteLLM — مفتاح واحد لكل الموديلات المجانية + fallback تلقائي
+#  التطبيقات بتكلم http://localhost:4000/v1 بمفتاح LITELLM_MASTER_KEY
+# ============================================================
+
+model_list:
+  # ---------- سريع ورخيص: Groq (30 RPM / 1,000 طلب يوميًا) ----------
+  - model_name: fast
+    litellm_params:
+      model: groq/openai/gpt-oss-120b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 28                       # سيب هامش أمان تحت حد المزود
+
+  - model_name: fast-small
+    litellm_params:
+      model: groq/openai/gpt-oss-20b
+      api_key: os.environ/GROQ_API_KEY
+      rpm: 28
+
+  # ---------- ذكي: Google AI Studio ----------
+  - model_name: smart
+    litellm_params:
+      # بدّل اسم الموديل لو Google غيّرته — شوف قائمة الموديلات في AI Studio
+      model: gemini/gemini-3.6-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  # ---------- احتياطي: OpenRouter :free (50 طلب/يوم) ----------
+  - model_name: free-fallback
+    litellm_params:
+      model: openrouter/google/gemma-4-31b-it:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # ---------- NVIDIA NIM (40 RPM) ----------
+  - model_name: nvidia
+    litellm_params:
+      model: nvidia_nim/nvidia/nemotron-3-super-120b-a12b
+      api_key: os.environ/NVIDIA_API_KEY
+
+  # ---------- Cloudflare Workers AI (10k Neurons/يوم) ----------
+  - model_name: edge
+    litellm_params:
+      model: cloudflare/@cf/openai/gpt-oss-120b
+      api_key: os.environ/CLOUDFLARE_API_KEY
+      # LiteLLM بيبني الـ endpoint من CLOUDFLARE_ACCOUNT_ID
+
+  # ---------- محلي 100% (شغّل profile: local) ----------
+  - model_name: local
+    litellm_params:
+      model: ollama/qwen3:8b
+      api_base: http://ollama:11434
+
+  # ---------- embeddings مجانية ----------
+  - model_name: embeddings
+    litellm_params:
+      model: gemini/text-embedding-004
+      api_key: os.environ/GEMINI_API_KEY
+
+litellm_settings:
+  num_retries: 2
+  request_timeout: 120
+  drop_params: true                 # يشيل أي باراميتر مش مدعوم عند المزود
+  set_verbose: false
+  # لو الموديل الأساسي فشل أو وصل للحد → جرّب اللي بعده بالترتيب
+  fallbacks:
+    - fast: ["smart", "free-fallback", "local"]
+    - fast-small: ["fast", "local"]
+    - smart: ["fast", "free-fallback", "local"]
+    - nvidia: ["fast", "free-fallback"]
+    - edge: ["fast", "local"]
+  context_window_fallbacks:
+    - fast: ["smart", "local"]
+  # لو ميزانية المفتاح خلصت، الموديلات المجانية تفضل شغالة
+  max_budget: null
+
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 3
+  cooldown_time: 30
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # لو عايز تسجل كل طلب في الداتابيز:
+  # store_model_in_db: true
