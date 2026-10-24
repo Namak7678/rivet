@@ -1,0 +1,99 @@
+# ============================================================
+#  أتمتة مجانية 24/7 على GitHub Actions — من غير سيرفر
+#  انسخه إلى: .github/workflows/ai-agent-cron.yml
+#  المتطلبات: secret اسمه GROQ_API_KEY (اختياري: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)
+#  ملاحظة: cron بيتقفل بعد 60 يوم بدون نشاط في الريبو العام.
+#          الحل: workflow_dispatch من cron-job.org أو commit دوري.
+# ============================================================
+
+name: AI Agent Cron
+
+on:
+  schedule:
+    - cron: "0 6 * * *"        # كل يوم 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "موضوع الملخص"
+        required: false
+        default: "AI agents and open source"
+
+# أقل صلاحيات ممكنة
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: ai-agent-cron
+  cancel-in-progress: false
+
+jobs:
+  run-agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: توليد الملخص (Groq — مجاني)
+        id: gen
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TOPIC: ${{ github.event.inputs.topic || 'AI agents and open source' }}
+        run: |
+          set -euo pipefail
+          [ -z "${GROQ_API_KEY:-}" ] && { echo "::error::GROQ_API_KEY مش متظبط"; exit 1; }
+
+          payload=$(jq -n --arg t "$TOPIC" '{
+            model: "openai/gpt-oss-120b",
+            temperature: 0.3,
+            messages: [
+              {role: "system", content: "أنت محلل تقني. اكتب بالعربي الفصيح، نقاط قصيرة، بدون حشو."},
+              {role: "user", content: ("اكتب ملخصًا من 5 نقاط عن: " + $t)}
+            ]
+          }')
+
+          code=$(curl -sS -o resp.json -w "%{http_code}" \
+            https://api.groq.com/openai/v1/chat/completions \
+            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+
+          if [ "$code" != "200" ]; then
+            echo "::error::Groq رجع $code"
+            cat resp.json
+            exit 1
+          fi
+
+          jq -r '.choices[0].message.content' resp.json > digest.md
+          {
+            echo "## ملخص $(date -u +%F)"
+            echo
+            cat digest.md
+            echo
+            echo "---"
+            echo "_اتولد آليًا بواسطة GitHub Actions + Groq_"
+          } > body.md
+          cat body.md
+
+      - name: نشر النتيجة كـ Issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "AI Digest — $(date -u +%F)" \
+            --body-file body.md \
+            --label "automated" || \
+          gh issue create --title "AI Digest — $(date -u +%F)" --body-file body.md
+
+      - name: إشعار تيليجرام (اختياري)
+        if: ${{ env.TELEGRAM_BOT_TOKEN != '' }}
+        run: |
+          curl -sS -X POST \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TELEGRAM_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            --data-urlencode text="$(head -c 3500 body.md)"

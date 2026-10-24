@@ -1,0 +1,144 @@
+# ============================================================
+#  Free AI Stack — n8n + LiteLLM + Open WebUI + Ollama + Postgres
+#  التشغيل:  cp .env.example .env && docker compose up -d
+#  الخدمات:
+#    n8n        http://localhost:5678
+#    LiteLLM    http://localhost:4000   (OpenAI-compatible)
+#    Open WebUI http://localhost:3000
+#    Ollama     http://localhost:11434
+# ============================================================
+
+name: free-ai-stack
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ---------------------------- قاعدة البيانات ----------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-freeai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-freeai}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # سكريبتات إنشاء قواعد منفصلة لكل خدمة
+      - ./init-db.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-freeai}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *default-logging
+    networks: [stack]
+
+  # ---------------------------- بوابة الموديلات ----------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+      - "--num_workers=2"
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-local-master}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-sk-local-salt-change-me}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-freeai}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/litellm
+      STORE_MODEL_IN_DB: "True"
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NVIDIA_API_KEY: ${NVIDIA_NIM_API_KEY:-}
+      CLOUDFLARE_API_KEY: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:4000/health/liveliness')\""]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+    logging: *default-logging
+    networks: [stack]
+
+  # ---------------------------- n8n ----------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: ${POSTGRES_USER:-freeai}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-change-me-32-chars-minimum-key}
+      GENERIC_TIMEZONE: ${TZ:-Europe/Amsterdam}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-files:/files
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    logging: *default-logging
+    networks: [stack]
+
+  # ---------------------------- واجهة الشات ----------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    restart: unless-stopped
+    depends_on:
+      litellm:
+        condition: service_started
+    environment:
+      OPENAI_API_BASE_URL: http://litellm:4000/v1
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:-sk-local-master}
+      WEBUI_SECRET_KEY: ${WEBUI_SECRET_KEY:-change-me}
+      ENABLE_SIGNUP: "true"          # أول مستخدم = admin، بعدها اقفلها
+    volumes:
+      - openwebui_data:/app/backend/data
+    ports:
+      - "${WEBUI_PORT:-3000}:8080"
+    logging: *default-logging
+    networks: [stack]
+
+  # ---------------------------- موديل محلي (اختياري) ----------------------------
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    profiles: ["local"]
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    logging: *default-logging
+    networks: [stack]
+
+volumes:
+  postgres_data:
+  n8n_data:
+  openwebui_data:
+  ollama_data:
+
+networks:
+  stack:
+    driver: bridge
